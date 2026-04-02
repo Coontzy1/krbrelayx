@@ -39,12 +39,16 @@ class LDAPRelayClient(ProtocolClient):
             kdc = authdata['domain']
         self.server = Server("ldap://%s:%s" % (self.targetHost, self.targetPort), get_info=ALL)
         self.session = Connection(self.server, user="a", password="b", authentication=SASL, sasl_mechanism=KERBEROS)
-        if self.serverConfig.mode == 'RELAY':
-            # Pass-thought auth
-            ldap_kerberos_auth(self.session, authdata['krbauth'])
-        else:
-            # Unconstrained delegation mode
-            ldap_kerberos(authdata['domain'], kdc, authdata['tgt'], authdata['username'], self.session, self.targetHost)
+        try:
+            if self.serverConfig.mode == 'RELAY':
+                ldap_kerberos_auth(self.session, authdata['krbauth'])
+            else:
+                ldap_kerberos(authdata['domain'], kdc, authdata['tgt'], authdata['username'], self.session, self.targetHost)
+            LOG.debug('LDAP: Bind to %s:%d successful' % (self.targetHost, self.targetPort))
+            return True
+        except Exception as e:
+            LOG.error('LDAP: Bind to %s:%d failed: %s' % (self.targetHost, self.targetPort, e))
+            return False
 
 class LDAPSRelayClient(LDAPRelayClient):
     PLUGIN_NAME = "LDAPS"
@@ -58,4 +62,13 @@ class LDAPSRelayClient(LDAPRelayClient):
             kdc = authdata['domain']
         self.server = Server("ldaps://%s:%s" % (self.targetHost, self.targetPort), get_info=ALL)
         self.session = Connection(self.server, user="a", password="b", authentication=SASL, sasl_mechanism=KERBEROS)
-        ldap_kerberos(authdata['domain'], kdc, authdata['tgt'], authdata['username'], self.session, self.targetHost)
+        try:
+            if self.serverConfig.mode == 'RELAY':
+                ldap_kerberos_auth(self.session, authdata['krbauth'])
+            else:
+                ldap_kerberos(authdata['domain'], kdc, authdata['tgt'], authdata['username'], self.session, self.targetHost)
+            LOG.debug('LDAPS: Bind to %s:%d successful' % (self.targetHost, self.targetPort))
+            return True
+        except Exception as e:
+            LOG.error('LDAPS: Bind to %s:%d failed: %s' % (self.targetHost, self.targetPort, e))
+            return False

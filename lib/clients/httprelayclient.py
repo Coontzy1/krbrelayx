@@ -53,18 +53,26 @@ class HTTPRelayClient(ProtocolClient):
         return self.doInitialActions(authdata, kdc)
 
     def doInitialActions(self, authdata, kdc=None):
-        self.session.request('GET', self.path)
-        res = self.session.getresponse()
-        res.read()
+        try:
+            self.session.request('GET', self.path)
+            res = self.session.getresponse()
+            res.read()
+        except (ConnectionRefusedError, ConnectionError, OSError) as e:
+            LOG.error('Relay target %s:%d is not reachable: %s' % (self.targetHost, self.targetPort, e))
+            return False
+
+        LOG.debug('HTTP relay: Initial GET to %s%s returned %d' % (self.targetHost, self.path, res.status))
         if res.status != 401:
             LOG.info('Status code returned: %d. Authentication does not seem required for URL' % res.status)
         try:
-            if 'Kerberos' not in res.getheader('WWW-Authenticate') and 'Negotiate' not in res.getheader('WWW-Authenticate'):
-                LOG.error('Kerberos Auth not offered by URL, offered protocols: %s' % res.getheader('WWW-Authenticate'))
+            www_auth = res.getheader('WWW-Authenticate')
+            LOG.debug('HTTP relay: WWW-Authenticate: %s' % www_auth)
+            if 'Kerberos' not in www_auth and 'Negotiate' not in www_auth:
+                LOG.error('Kerberos Auth not offered by URL, offered protocols: %s' % www_auth)
                 return False
-            if 'Kerberos' in res.getheader('WWW-Authenticate'):
+            if 'Kerberos' in www_auth:
                 self.authenticationMethod = "Kerberos"
-            elif 'Negotiate' in res.getheader('WWW-Authenticate'):
+            elif 'Negotiate' in www_auth:
                 self.authenticationMethod = "Negotiate"
         except (KeyError, TypeError):
             LOG.error('No authentication requested by the server for url %s' % self.targetHost)
@@ -82,18 +90,19 @@ class HTTPRelayClient(ProtocolClient):
             krbauth = build_apreq(authdata['domain'], kdc, authdata['tgt'], authdata['username'], 'http', self.targetHost)
             negotiate = base64.b64encode(krbauth).decode("ascii")
 
+        LOG.debug('HTTP relay: Sending %s auth (%d bytes) to %s%s' % (self.authenticationMethod, len(authdata.get('krbauth', b'')), self.targetHost, self.path))
         headers = {'Authorization':'%s %s' % (self.authenticationMethod, negotiate)}
-        self.session.request('GET', self.path ,headers=headers)
+        self.session.request('GET', self.path, headers=headers)
         res = self.session.getresponse()
-        res.read()
+        body = res.read()
+        LOG.debug('HTTP relay: Auth response: %d %s' % (res.status, res.reason))
         if res.status == 401:
-            return None, STATUS_ACCESS_DENIED
+            LOG.error('Relay target returned 401 Access Denied - Kerberos ticket may be for wrong SPN or target rejected the auth')
+            return False
         else:
             LOG.info('HTTP server returned status code %d, treating as a successful login' % res.status)
-            #Cache this
-            self.lastresult = res.read()
-            return None, STATUS_SUCCESS
-        return True
+            self.lastresult = body
+            return True
 
     def killConnection(self):
         if self.session is not None:

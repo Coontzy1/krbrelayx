@@ -182,7 +182,7 @@ def main():
     # AD CS options
     adcsoptions = parser.add_argument_group("AD CS attack options")
     adcsoptions.add_argument('--adcs', action='store_true', required=False, help='Enable AD CS relay attack')
-    adcsoptions.add_argument('--template', action='store', metavar="TEMPLATE", required=False, help='AD CS template. Defaults to Machine or User whether relayed account name ends with `$`. Relaying a DC should require specifying `DomainController`')
+    adcsoptions.add_argument('--template', action='append', metavar="TEMPLATE", required=False, help='AD CS template to try. Can be specified multiple times to try each in order (e.g. --template User --template Machine). Defaults to Machine or User based on whether relayed account ends with `$`.')
     adcsoptions.add_argument('--altname', action='store', metavar="ALTNAME", required=False, help='Subject Alternative Name to use when performing ESC1 or ESC6 attacks.')
     adcsoptions.add_argument('-v', "--victim", action='store', metavar = 'TARGET', help='Victim username or computername$, to request the correct certificate name.')
 

